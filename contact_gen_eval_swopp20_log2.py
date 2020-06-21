@@ -38,12 +38,12 @@ class RNN(nn.Module):
         
         self.eps = eps
 
-        # self.a = Parameter(torch.randn(num_nodes, dtype=torch.double))
-        # self.beta = Parameter(torch.randn(num_nodes, dtype=torch.double))
-        # self.gamma = Parameter(torch.randn(num_nodes, dtype=torch.double))
-        self.a = Parameter(torch.randn(1, dtype=torch.double))
-        self.beta = Parameter(torch.randn(1, dtype=torch.double))
-        self.gamma = Parameter(torch.randn(1, dtype=torch.double))
+        self.a = Parameter(torch.randn(num_nodes, dtype=torch.double))
+        self.beta = Parameter(torch.randn(num_nodes, dtype=torch.double))
+        self.gamma = Parameter(torch.randn(num_nodes, dtype=torch.double))
+        # self.a = Parameter(torch.randn(1, dtype=torch.double))
+        # self.beta = Parameter(torch.randn(1, dtype=torch.double))
+        # self.gamma = Parameter(torch.randn(1, dtype=torch.double))
         
         # print("self.a:", self.a)
 
@@ -71,10 +71,10 @@ class RNN(nn.Module):
         #     Iit_prev * (1 - torch.exp(-gamma * ts)) + Rit_prev
 
     def calc_Sit(self, Sit_prev, Eit, Ijt, beta, Tijt):
-        return Sit_prev + (-beta * torch.mv(Tijt, Ijt))
+        return Sit_prev + (-beta * torch.mv(Tijt, torch.exp(Ijt)))
         # return Sit_prev * torch.exp(-beta * torch.mv(Tijt, Ijt))   
     def calc_newEit(self, Sit_prev, Eit, Ijt, beta, Tijt):
-        Sit_prev_weight = torch.log(self.my_clamp(1 - torch.exp(-beta * torch.mv(Tijt, Ijt))))
+        Sit_prev_weight = torch.log(self.my_clamp(1 - torch.exp(-beta * torch.mv(Tijt, torch.exp(Ijt)))))
         return torch.logsumexp(torch.stack((Sit_prev + Sit_prev_weight, Eit)), dim=0)
         # return Sit_prev * (1 - torch.exp(-beta * torch.mv(Tijt, Ijt))) + Eit
             
@@ -338,7 +338,7 @@ if __name__ == "__main__":
     print(params)
     # exit(1)
     
-    # criterion = nn.BCELoss()
+    criterion = nn.BCELoss()
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
     
     num_layers = len(Cijl)
@@ -421,7 +421,7 @@ if __name__ == "__main__":
         # exit(1)
 
         # print("epoch_idx", epoch_idx, "sum_losses:", sum_losses, nn.Sigmoid()(net.a))
-        print("epoch_idx", epoch_idx, "sum_losses:", float(sum_losses), float(nn.Sigmoid()(net.a)))
+        print("epoch_idx", epoch_idx, "sum_losses:", float(sum_losses), nn.Sigmoid()(net.a))
 
     print(nn.Sigmoid()(net.a))
     print(nn.Sigmoid()(net.beta))
