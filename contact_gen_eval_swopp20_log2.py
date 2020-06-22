@@ -31,30 +31,63 @@ import torch.nn.functional as F
 import sys
 
 class RNN(nn.Module):
-    def __init__(self, num_nodes, eps):
+    def __init__(self, num_nodes, eps, a_init, beta_init, gamma_init, Cijl, Til, Ail, Ahil, num_layers, device):
         super(RNN, self).__init__()
 
         self.num_nodes = num_nodes
         
         self.eps = eps
 
-        self.a = Parameter(torch.randn(num_nodes, dtype=torch.double))
-        self.beta = Parameter(torch.randn(num_nodes, dtype=torch.double))
-        self.gamma = Parameter(torch.randn(num_nodes, dtype=torch.double))
-        # self.a = Parameter(torch.randn(1, dtype=torch.double))
-        # self.beta = Parameter(torch.randn(1, dtype=torch.double))
-        # self.gamma = Parameter(torch.randn(1, dtype=torch.double))
+        self.a = Parameter(torch.tensor([a_init], dtype=torch.double))
+        self.beta = Parameter(torch.tensor([beta_init], dtype=torch.double))
+        self.gamma = Parameter(torch.tensor([gamma_init], dtype=torch.double))
+        # self.a = Parameter(torch.randn(num_nodes, dtype=torch.double))
+        # self.beta = Parameter(torch.randn(num_nodes, dtype=torch.double))
+        # self.beta = Parameter(torch.tensor([0.999], dtype=torch.double))
+        # self.gamma = Parameter(torch.randn(num_nodes, dtype=torch.double))
         
         # print("self.a:", self.a)
 
+        self.Cijl = torch.from_numpy(Cijl.astype(np.float64)).clone().to(device=device, dtype=torch.double)
+        self.Til = torch.from_numpy(Til.astype(np.float64)).clone().to(device=device, dtype=torch.double)
+        self.Ail = torch.from_numpy(Ail.astype(np.float64)).clone().to(device=device, dtype=torch.double)
+        self.Ahil = torch.from_numpy(Ahil.astype(np.float64)).clone().to(device=device, dtype=torch.double)
+        self.device = device
+
+        #self.Cijl = torch.tensor(Cijl, dtype=torch.double)
+        #self.Til = torch.tensor(Til, dtype=torch.double)
+        #self.Ail = torch.tensor(Ail, dtype=torch.double)
+        #self.Ahil = torch.tensor(Ahil, dtype=torch.double)
+
+        self.num_layers = num_layers
+        
         self.sigmoid = nn.Sigmoid()
         
 
     def sig_inv(self, i):
         return torch.clamp(torch.log(i/(1-i)), min=-sys.float_info.max, max=sys.float_info.max)
 
+    def my_logsumexp(self, a, b, dim):
+        a_max = torch.max(a, dim=dim).values
+        print(a_max, a_max.size())
+        print(a.size())
+        print(b)
+        print(torch.stack([a_max for _ in b]))
+        print(torch.exp(a - torch.stack([a_max for _ in b])).size())
+        print(torch.tensor(b).view(-1, 1))
+        out = torch.log(torch.sum(torch.tensor(b).view(-1, 1) * torch.exp(a - torch.stack([a_max for _ in b])), dim=dim))
+        out += a_max
+        print(out)
+        exit(1)
+        return out
+
     def calc_Eit(self, Sit_prev, Eit_prev, Iit_prev, Rit_prev, a, beta, gamma, ts):
+        #print("hoge")
+        #print(Eit_prev)
+        #print(a)
+        #print(ts)
         return Eit_prev + (-a * ts)
+    
     def calc_Iit(self, Sit_prev, Eit_prev, Iit_prev, Rit_prev, a, beta, gamma, ts):
         Eit_prev_weight = torch.log(self.my_clamp(a / (a - gamma) * (torch.exp(-gamma * ts) - torch.exp(-a * ts))))
         return torch.logsumexp(torch.stack((Eit_prev + Eit_prev_weight, Iit_prev + (-gamma * ts))), dim=0)
@@ -71,43 +104,183 @@ class RNN(nn.Module):
         #     Iit_prev * (1 - torch.exp(-gamma * ts)) + Rit_prev
 
     def calc_Sit(self, Sit_prev, Eit, Ijt, beta, Tijt):
+#        return Sit_prev + torch.sum(torch.log(1 + torch.exp(Ijt) * (torch.exp(-beta * Tijt) - 1)), dim=0)
+
+#        ############# best #############
         return Sit_prev + (-beta * torch.mv(Tijt, torch.exp(Ijt)))
-        # return Sit_prev * torch.exp(-beta * torch.mv(Tijt, Ijt))   
+#        ############# best #############
+
+        # return Sit_prev + torch.sum(torch.log(1 - torch.einsum("j,ji->ji", Ijt, Tijt)), dim=0)
+    
+        # return Sit_prev * torch.exp(-beta * torch.mv(Tijt, Ijt))
+        
     def calc_newEit(self, Sit_prev, Eit, Ijt, beta, Tijt):
-        Sit_prev_weight = torch.log(self.my_clamp(1 - torch.exp(-beta * torch.mv(Tijt, torch.exp(Ijt)))))
+        # Sit = Sit_prev + (-beta * torch.mv(Tijt, torch.exp(Ijt)))
+
+#        Sit = Sit_prev + torch.sum(torch.log(1 + torch.exp(Ijt) * (torch.exp(-beta * Tijt) - 1)), dim=0)
+#        stacked = torch.stack((Sit_prev, Sit, Eit))
+#        emax = torch.max(stacked, dim=0).values
+#        return emax + torch.log(self.my_clamp(torch.exp(Sit_prev - emax) - torch.exp(Sit - emax) + torch.exp(Eit - emax)))
+
+        # Sit_prev_weight = torch.log(1 + torch.exp(Ijt) * (torch.exp(-beta * Tijt) - 1))
+        # logsum = torch.sum(Sit_prev_weight, dim=0)
+        # return torch.logsumexp(torch.stack((Sit_prev + torch.log(self.my_clamp(1 - torch.exp(logsum))), Eit)), dim=0)
+
+        # Sit_prev_weight = torch.log(self.my_clamp(1 - torch.exp(-beta * torch.mv(Tijt, torch.exp(Ijt)))))
+        
+#        ############# best #############
+        Sit_prev_weight = torch.log(self.my_clamp(beta * torch.mv(Tijt, torch.exp(Ijt))))
         return torch.logsumexp(torch.stack((Sit_prev + Sit_prev_weight, Eit)), dim=0)
+#        ############# best #############
+
         # return Sit_prev * (1 - torch.exp(-beta * torch.mv(Tijt, Ijt))) + Eit
             
     def my_clamp(self, i):
-        return torch.clamp(i, min=self.eps, max=1-self.eps)
+        #return torch.clamp(i, min=self.eps, max=1-self.eps)
+        return torch.clamp(i, min=self.eps)
     
-    def forward(self, Ti, Cij, h_Sit0, h_Eit0, h_Iit0, h_Rit0, ASit, AEit, AIit, ARit):
+    def forward(self):
         # print(Ti)
-        a = self.sigmoid(self.a)
-        beta = self.sigmoid(self.beta)
-        gamma = self.sigmoid(self.gamma)
+        a = self.sigmoid(self.a) * 0.1
+        beta = self.sigmoid(self.beta) * 0.1
+        gamma = self.sigmoid(self.gamma) * 0.1
         # h_Sit = self.sigmoid(h_Sit0)
         # h_Eit = self.sigmoid(h_Eit0)
         # h_Iit = self.sigmoid(h_Iit0)
         # h_Rit = self.sigmoid(h_Rit0)
         # print(h_Sit0)
         # exit(1)
-        
-        h_Sit2 = h_Sit
-        h_Eit2 = self.calc_Eit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, Ti)
-        h_Iit2 = self.calc_Iit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, Ti)
-        h_Rit2 = self.calc_Rit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, Ti)
-        
-        h_Sit3 = self.calc_Sit(h_Sit2, h_Eit2, h_Iit2, beta, Cij)
-        h_Eit3 = self.calc_newEit(h_Sit2, h_Eit2, h_Iit2, beta, Cij)
-        h_Iit3 = h_Iit2
-        h_Rit3 = h_Rit2
-        # print(h_Rit3)
-        # exit(1)
 
-        # return self.my_clamp(h_Sit3), self.my_clamp(h_Eit3), self.my_clamp(h_Iit3), self.my_clamp(h_Rit3)
-        return h_Sit3, h_Eit3, h_Iit3, h_Rit3
+        sum_losses = 0.0
+        h_Sit, h_Eit, h_Iit, h_Rit = torch.log(self.my_clamp(self.Ail[0][:, 0])), torch.log(self.my_clamp(self._zero_tensor())),\
+            torch.log(self.my_clamp(self.Ail[0][:, 1])), torch.log(self.my_clamp(self.Ail[0][:, 2]))
 
+        for l in range(self.num_layers):
+            h_Sit2 = h_Sit
+            h_Eit2 = self.calc_Eit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
+            h_Iit2 = self.calc_Iit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
+            h_Rit2 = self.calc_Rit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
+        
+            h_Sit3 = self.calc_Sit(h_Sit2, h_Eit2, h_Iit2, beta, self.Cijl[l])
+            h_Eit3 = self.calc_newEit(h_Sit2, h_Eit2, h_Iit2, beta, self.Cijl[l])
+            h_Iit3 = h_Iit2
+            h_Rit3 = h_Rit2
+
+            h_Sit = h_Sit3 + torch.log(self.my_clamp(self.Ail[l][:, 0]))
+            h_Eit = h_Eit3 + torch.log(self.my_clamp(self.Ail[l][:, 0]))
+            h_Iit = h_Iit3 + torch.log(self.my_clamp(self.Ail[l][:, 1]))
+            h_Rit = h_Rit3 + torch.log(self.my_clamp(self.Ail[l][:, 2]))
+            
+        sum_losses = -torch.mean(torch.logsumexp(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0), dim=-1)
+
+        return sum_losses
+
+##### viterbi #####
+
+    def calc_Iit_max(self, Sit_prev, Eit_prev, Iit_prev, Rit_prev, a, beta, gamma, ts):
+        Eit_prev_weight = torch.log(self.my_clamp(a / (a - gamma) * (torch.exp(-gamma * ts) - torch.exp(-a * ts))))
+#        return torch.logsumexp(torch.stack((Eit_prev + Eit_prev_weight, Iit_prev + (-gamma * ts))), dim=0)
+        return torch.stack((self._inf_tensor(), Eit_prev + Eit_prev_weight, Iit_prev + (-gamma * ts), self._inf_tensor()))
+
+    def calc_Rit_max(self, Sit_prev, Eit_prev, Iit_prev, Rit_prev, a, beta, gamma, ts):
+        Eit_prev_weight = torch.log(self.my_clamp(1 + gamma / (a - gamma) * torch.exp(-a * ts) -\
+                            a / (a - gamma) * torch.exp(-gamma * ts)))
+        Iit_prev_weight = torch.log(self.my_clamp(1 - torch.exp(-gamma * ts)))
+        return torch.stack((self._inf_tensor(), Eit_prev + Eit_prev_weight, Iit_prev + Iit_prev_weight, Rit_prev))
+
+    def calc_Sit_max(self, Sit_prev, Eit, Ijt, beta, Tijt):
+        ############## best #############
+        return torch.stack((Sit_prev + (-beta * torch.mv(Tijt, torch.exp(Ijt))), self._inf_tensor(), self._inf_tensor(), self._inf_tensor()))
+        ############## best #############
+        
+#        return torch.stack((Sit_prev + torch.sum(torch.log(1 + torch.exp(Ijt) * (torch.exp(-beta * Tijt) - 1)), dim=0), self._inf_tensor(), self._inf_tensor(), self._inf_tensor()))
+    
+    def calc_newEit_max(self, Sit_prev, Eit, Ijt, beta, Tijt):
+        ############## best #############
+        Sit_prev_weight = torch.log(self.my_clamp(beta * torch.mv(Tijt, torch.exp(Ijt))))
+        return torch.stack((Sit_prev + Sit_prev_weight, Eit, self._inf_tensor(), self._inf_tensor()))
+        ############## best #############
+        
+#        Sit = Sit_prev + torch.sum(torch.log(1 + torch.exp(Ijt) * (torch.exp(-beta * Tijt) - 1)), dim=0)
+#        stacked = torch.stack((Sit_prev, Sit))
+#        emax = torch.max(stacked, dim=0).values
+#        return torch.stack((emax + torch.log(self.my_clamp(torch.exp(Sit_prev - emax) - torch.exp(Sit - emax))), Eit, self._inf_tensor(), self._inf_tensor()))
+        
+#        return emax + torch.log(self.my_clamp(torch.exp(Sit_prev - emax) - torch.exp(Sit - emax) + torch.exp(Eit - emax)))
+
+    def _inf_tensor(self):
+        return torch.from_numpy(np.array([-sys.float_info.max for _ in range(self.num_nodes)])).clone().to(device=device, dtype=torch.double)
+
+    def _zero_tensor(self):
+        return torch.from_numpy(np.array([0 for _ in range(self.num_nodes)])).clone().to(device=device, dtype=torch.double)
+
+
+    def max_path(self):
+        a = self.sigmoid(self.a) * 0.1
+        beta = self.sigmoid(self.beta) * 0.1
+        gamma = self.sigmoid(self.gamma) * 0.1
+
+        sum_losses = 0.0
+        h_Sit, h_Eit, h_Iit, h_Rit = torch.log(self.my_clamp(self.Ail[0][:, 0])), torch.log(self.my_clamp(self._zero_tensor())),\
+            torch.log(self.my_clamp(self.Ail[0][:, 1])), torch.log(self.my_clamp(self.Ail[0][:, 2]))
+
+        one_hots = list()
+
+        phi_Sits, phi_Eits, phi_Iits, phi_Rits = list(), list(), list(), list()
+        for l in range(self.num_layers):
+            h_Sit2 = h_Sit
+            h_Eit2 = self.calc_Eit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
+            toIit = self.calc_Iit_max(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
+            toRit = self.calc_Rit_max(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
+            
+            h_Iit2 = torch.max(toIit, dim=0).values
+            
+            toSit = self.calc_Sit_max(h_Sit2, h_Eit2, h_Iit2, beta, self.Cijl[l])
+            toEit = self.calc_newEit_max(h_Sit2, h_Eit2, h_Iit2, beta, self.Cijl[l])
+
+            toSit_max = torch.max(toSit, dim=0)
+            toEit_max = torch.max(toEit, dim=0)
+            toIit_max = torch.max(toIit, dim=0)
+            toRit_max = torch.max(toRit, dim=0)
+
+            h_Sit3, phi_Sit = toSit_max.values, toSit_max.indices
+            h_Eit3, phi_Eit = toEit_max.values, toEit_max.indices
+            h_Iit3, phi_Iit = toIit_max.values, toIit_max.indices
+            h_Rit3, phi_Rit = toRit_max.values, toRit_max.indices
+
+            h_Sit = h_Sit3 + torch.log(self.my_clamp(self.Ail[l][:, 0]))
+            h_Eit = h_Eit3 + torch.log(self.my_clamp(self.Ail[l][:, 0]))
+            h_Iit = h_Iit3 + torch.log(self.my_clamp(self.Ail[l][:, 1]))
+            h_Rit = h_Rit3 + torch.log(self.my_clamp(self.Ail[l][:, 2]))
+
+            phi_Sits.append(phi_Sit)
+            phi_Eits.append(phi_Eit)
+            phi_Iits.append(phi_Iit)
+            phi_Rits.append(phi_Rit)
+
+        result_zt = torch.max(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0).indices.tolist()
+        result_z = list()
+        print(result_zt)
+        result_z.insert(0, result_zt)
+
+        phi = [phi_Sits, phi_Eits, phi_Iits, phi_Rits]
+        for l in np.linspace(self.num_layers-1, 0, self.num_layers, dtype=int):
+            #print(l)
+            #print(phi[result_zt[0]][l].size())
+            result_zt = [phi[result_zt[i]][l][i].item() for i in range(self.num_nodes)]
+            result_z.insert(0, result_zt)
+
+        return result_z
+
+#            index = torch.unsqueeze(torch.max(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0).indices, dim=1)
+#            onehot = torch.LongTensor(self.num_nodes, 4).zero_()
+#            #print(onehot.size())
+#            #print(index.size())
+#            onehot = onehot.scatter_(dim=1, index=index, value=1.0)
+#            one_hots.append(onehot)
+#
+#        return torch.stack(one_hots)
+    
 class ReadEdgeT:
     def __init__(self, dirname, filename):
         self.dirname, self.filename = dirname, filename
@@ -281,12 +454,21 @@ if __name__ == "__main__":
     print(max(rest_ets), min(rest_ets))
     print(len(individuals))
     
-    a, beta, gamma, i_init = 0.05, 0.15, 0.0005, 0.1
-    seed = 2
-    runsim = RunSim(individuals, rest_ets, a, beta, gamma, i_init, seed)
+    a, beta, gamma, i_init = 0.05, 0.01, 0.00002, 0.1
+    seed = 3
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+    runsim = RunSim(individuals, rest_ets, a, beta, gamma, i_init)
     result = runsim.runsim()
     
-    stepsize = 10
+    stepsize = 50
     tmax, tmin = max(rest_ets), min(rest_ets)
     tmax = min([tmax, max(list(result.keys()))])
     
@@ -320,30 +502,40 @@ if __name__ == "__main__":
 
     print(Cijl.shape, Til.shape, Ail.shape, Ahil.shape)
 
-    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    #device = torch.device("cpu")
     print("device:", device)
 
-    Cijl = torch.tensor(Cijl, device=device, dtype=torch.double)
-    Til = torch.tensor(Til, device=device, dtype=torch.double)
-    Ail = torch.tensor(Ail, device=device, dtype=torch.double)
-    Ahil = torch.tensor(Ahil, device=device, dtype=torch.double)
+#    Cijl = torch.tensor(Cijl, device=device, dtype=torch.double)
+#    Til = torch.tensor(Til, device=device, dtype=torch.double)
+#    Ail = torch.tensor(Ail, device=device, dtype=torch.double)
+#    Ahil = torch.tensor(Ahil, device=device, dtype=torch.double)
 
-    learning_rate = 0.05
+    learning_rate = 0.1
     num_eps = sys.float_info.min
-    net = RNN(len(individuals), num_eps)
+
+    a_init, beta_init, gamma_init = np.random.randn(), np.random.randn(), np.random.randn()
+    print(a_init, beta_init, gamma_init)
+    #exit(1)
+    num_layers = len(Cijl)
+    num_individuals = len(individuals)
+    net = RNN(num_individuals, num_eps, a_init, beta_init, gamma_init, Cijl, Til, Ail, Ahil, num_layers, device)
     print(net)
     net.to(device)
     params = list(net.parameters())
     print(params)
-    # exit(1)
+
+    max_path = net.max_path()
+    #print(max_path)
+    print(np.array(max_path))
+    exit(1)
     
     criterion = nn.BCELoss()
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
     
     num_layers = len(Cijl)
     num_individuals = len(individuals)
-    num_epochs = 200
+    num_epochs = 2000
     
     layer_train_mask = [True for _ in range(num_layers)]
 
@@ -356,72 +548,24 @@ if __name__ == "__main__":
     print(ind_train_mask, sum(ind_train_mask))
     print(ind_test_mask)
     
-    def sig_inv(i):
-        return torch.clamp(torch.log(i/(1-i)), min=-sys.float_info.max, max=sys.float_info.max)
+#    def sig_inv(i):
+#        return torch.clamp(torch.log(i/(1-i)), min=-sys.float_info.max, max=sys.float_info.max)
 
     print(num_individuals)
     print(num_layers)
-    Ail_clamped = torch.clamp(Ail, min=num_eps, max=1-num_eps)
+#    Ail_clamped = torch.clamp(Ail, min=num_eps, max=1-num_eps)
 
     for epoch_idx in range(num_epochs):
-        num_losses = torch.tensor([0], device=device)
-
-        sum_losses = 0.0
-
-        h_Sit, h_Eit, h_Iit, h_Rit = torch.log(torch.clamp(Ail[0][:, 0], min=num_eps, max=1-num_eps)), torch.log(torch.clamp(torch.zeros(num_individuals, device=device, dtype=torch.double), min=num_eps, max=1-num_eps)),\
-            torch.log(torch.clamp(Ail[0][:, 1], min=num_eps, max=1-num_eps)), torch.log(torch.clamp(Ail[0][:, 2], min=num_eps, max=1-num_eps))
-
-        # print(h_Sit)
-        # exit(1)
         optimizer.zero_grad()
-        # print(net.a)
-        # exit(1)
-    
-        # print(num_layers)
-        # exit(1)
-        for l in range(num_layers):
-
-            h_Sit, h_Eit, h_Iit, h_Rit = net(Til[l], Cijl[l], h_Sit, h_Eit, h_Iit, h_Rit, Ail[l][:, 0], Ail[l][:, 0], Ail[l][:, 1], Ail[l][:, 2])
-
-            h_Sit = h_Sit + torch.log(torch.clamp(Ail[l][:, 0], min=num_eps, max=1-num_eps))
-            h_Eit = h_Eit + torch.log(torch.clamp(Ail[l][:, 0], min=num_eps, max=1-num_eps))
-            h_Iit = h_Iit + torch.log(torch.clamp(Ail[l][:, 1], min=num_eps, max=1-num_eps))
-            h_Rit = h_Rit + torch.log(torch.clamp(Ail[l][:, 2], min=num_eps, max=1-num_eps))
-
-            # if l == 1:
-            #     print(h_Sit)
-            #     exit(1)
-            # if layer_train_mask[l]:
-            #     # h_SEit = torch.clamp(h_Sit + h_Eit, min=num_eps, max=1-num_eps)
-            #     h_SEit = h_Sit + h_Eit
-
-                # sum_losses -= torch.dot(h_SEit[ind_train_mask], Ail[l][:, 0][ind_train_mask])
-                # sum_losses -= torch.dot(h_Iit[ind_train_mask], Ail[l][:, 1][ind_train_mask])
-                # sum_losses -= torch.dot(h_Rit[ind_train_mask], Ail[l][:, 2][ind_train_mask])
-
-        # print(h_Rit)
-        sum_losses = -torch.mean(torch.logsumexp(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0), dim=-1)
-        print(sum_losses)
-        # exit(1)
-        # se_loss = torch.logsumexp(torch.stack((h_Sit, h_Eit)), dim=0)
-        # i_loss = h_Iit[ind_train_mask]
-        # r_loss = h_Rit[ind_train_mask]
-        # sum_losses -= (se_loss + i_loss + r_loss)
-
-        print("a:", net.a.data)
-        # print(net.a.grad)
-        # print(net.beta.grad)
-        # print(net.gamma.grad)
+        sum_losses = net()
+        #print(sum_losses)
+        #print("a:", net.a.data.item())
         sum_losses.backward()
-
-        # print(net.a.grad)
-        # print(net.beta.grad)
-        # print(net.gamma.grad)
+        #print("GRAD:", net.a.grad.item(), net.beta.grad.item(), net.gamma.grad.item())
         optimizer.step()
-        # exit(1)
-
-        # print("epoch_idx", epoch_idx, "sum_losses:", sum_losses, nn.Sigmoid()(net.a))
-        print("epoch_idx", epoch_idx, "sum_losses:", float(sum_losses), nn.Sigmoid()(net.a))
+        #print("epoch_idx", epoch_idx, "sum_losses:", float(sum_losses))
+        #print(nn.Sigmoid()(net.a).item(), nn.Sigmoid()(net.beta).item(), nn.Sigmoid()(net.gamma).item())
+        print("epoch_idx %d" % epoch_idx, "sum_losses: %.5f" % float(sum_losses), "%.5f %.5f %.5f" % (nn.Sigmoid()(net.a).item(), nn.Sigmoid()(net.beta).item(), nn.Sigmoid()(net.gamma).item()))
 
     print(nn.Sigmoid()(net.a))
     print(nn.Sigmoid()(net.beta))
