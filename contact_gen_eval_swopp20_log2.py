@@ -30,6 +30,8 @@ import torch.nn.functional as F
 
 import sys
 
+import time
+
 class RNN(nn.Module):
     def __init__(self, num_nodes, eps, a_init, beta_init, gamma_init, Cijl, Til, Ail, Ahil, init_Ail, num_layers, param_ratio, device):
         super(RNN, self).__init__()
@@ -215,10 +217,10 @@ class RNN(nn.Module):
         #return torch.stack((Sit_prev + torch.sum(torch.log(1 + torch.exp(Ijt) * (torch.exp(-beta * Tijt) - 1)), dim=0), self._inf_tensor(), self._inf_tensor(), self._inf_tensor()))
     
     def calc_newEit_max(self, Sit_prev, Eit, Ijt, beta, Tijt):
-        sum_Tijt = torch.sum(Tijt, dim=0)
-        Sit_prev_weight = torch.log(beta) + torch.sum(torch.einsum("j,ji->ji", Ijt, Tijt) + torch.einsum("i,ji->ji", torch.log(self.my_clamp(sum_Tijt)), Tijt), dim=0) / self.my_clamp(sum_Tijt)
+        #sum_Tijt = torch.sum(Tijt, dim=0)
+        #Sit_prev_weight = torch.log(beta) + torch.sum(torch.einsum("j,ji->ji", Ijt, Tijt) + torch.einsum("i,ji->ji", torch.log(self.my_clamp(sum_Tijt)), Tijt), dim=0) / self.my_clamp(sum_Tijt)
         ############## best #############
-        #Sit_prev_weight = torch.log(self.my_clamp(beta * torch.mv(Tijt, torch.exp(Ijt))))
+        Sit_prev_weight = torch.log(self.my_clamp(beta * torch.mv(Tijt, torch.exp(Ijt))))
         return torch.stack((Sit_prev + Sit_prev_weight, Eit, self._inf_tensor(), self._inf_tensor()))
         ############## best #############
         
@@ -249,7 +251,12 @@ class RNN(nn.Module):
 
         one_hots = list()
 
-        phi_Sits, phi_Eits, phi_Iits, phi_Rits = list(), list(), list(), list()
+        #phi_Sits, phi_Eits, phi_Iits, phi_Rits = list(), list(), list(), list()
+        phi_Sits = torch.zeros(self.num_layers, self.num_nodes, device=self.device, dtype=torch.int)
+        phi_Eits = torch.zeros(self.num_layers, self.num_nodes, device=self.device, dtype=torch.int)
+        phi_Iits = torch.zeros(self.num_layers, self.num_nodes, device=self.device, dtype=torch.int)
+        phi_Rits = torch.zeros(self.num_layers, self.num_nodes, device=self.device, dtype=torch.int)
+        
         for l in range(self.num_layers):
             h_Sit2 = h_Sit
             h_Eit2 = self.calc_Eit(h_Sit, h_Eit, h_Iit, h_Rit, a, beta, gamma, self.Til[l])
@@ -276,23 +283,38 @@ class RNN(nn.Module):
             h_Iit = h_Iit3 + torch.log(self.my_clamp(self.Ail[l][:, 1]))
             h_Rit = h_Rit3 + torch.log(self.my_clamp(self.Ail[l][:, 2]))
 
-            phi_Sits.append(phi_Sit)
-            phi_Eits.append(phi_Eit)
-            phi_Iits.append(phi_Iit)
-            phi_Rits.append(phi_Rit)
+            #phi_Sits.append(phi_Sit)
+            #phi_Eits.append(phi_Eit)
+            #phi_Iits.append(phi_Iit)
+            #phi_Rits.append(phi_Rit)
+            phi_Sits[l, :] = phi_Sit
+            phi_Eits[l, :] = phi_Eit
+            phi_Iits[l, :] = phi_Iit
+            phi_Rits[l, :] = phi_Rit
 
-        result_zt = torch.max(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0).indices.tolist()
-        result_z = list()
+        #result_zt = torch.max(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0).indices.tolist()
         #print(result_zt)
-        result_z.insert(0, result_zt)
+        result_zt = torch.max(torch.stack((h_Sit, h_Eit, h_Iit, h_Rit)), dim=0).indices.long()
 
-        phi = [phi_Sits, phi_Eits, phi_Iits, phi_Rits]
-        #for l in np.linspace(self.num_layers-1, 0, self.num_layers, dtype=int):
-        for l in np.linspace(self.num_layers-1, 1, self.num_layers, dtype=int):
+        #result_z = list()
+        result_z = torch.zeros(self.num_layers, self.num_nodes, device=self.device, dtype=torch.int)
+        
+        #result_z.insert(0, result_zt)
+        result_z[self.num_layers-1, :] = result_zt
+
+        #phi = [phi_Sits, phi_Eits, phi_Iits, phi_Rits]
+        phi = torch.stack((phi_Sits, phi_Eits, phi_Iits, phi_Rits))
+        
+        for l in np.linspace(self.num_layers-1, 0, self.num_layers, dtype=int):
             #print(l)
             #print(phi[result_zt[0]][l].size())
-            result_zt = [phi[result_zt[i]][l][i].item() for i in range(self.num_nodes)]
-            result_z.insert(0, result_zt)
+            
+            #result_zt = [phi[result_zt[i], l, i].item() for i in range(self.num_nodes)]
+            #result_zt = torch.from_numpy(np.array([phi[result_zt[i]][l][i].item() for i in range(self.num_nodes)])).clone().to(device=self.device, dtype=torch.int)
+            result_zt = torch.squeeze(torch.gather(phi[:, l, :], 0, torch.unsqueeze(result_zt, 0)), 0).long()
+            
+            #result_z.insert(0, result_zt)
+            result_z[l-1, :] = result_zt
 
         return result_z
 
@@ -302,26 +324,42 @@ class RNN(nn.Module):
         #print("hoge")
         #exit(1)
         
-        max_Eidx = dd(lambda: self.num_layers)
-        true_Eidx = dict()
+        #max_Eidx = dd(lambda: self.num_layers)
+        max_Eidx = torch.from_numpy(np.array([self.num_layers for _ in range(self.num_nodes)])).clone().to(device=self.device, dtype=torch.int)
+        #true_Eidx = dict()
+        true_Eidx = torch.from_numpy(np.array([self.num_layers for _ in range(self.num_nodes)])).clone().to(device=self.device, dtype=torch.int)
 
         Spos, Epos, Ipos, Rpos = 0, 1, 2, 3
         
         for l in range(self.num_layers):
             #print(self.Ahil[l])
             #print(self.Ahil[l][73])
-            for i in range(self.num_nodes):
-                if i not in max_Eidx and result_z[l][i] == Epos:
-                    max_Eidx[i] = l
-#                print(self.Ahil[self.num_layers-1])
-#                exit(1)
-                if l != 0 and i not in true_Eidx and (int(self.Ahil[l][i][Epos].item()) == 1 or (int(self.Ahil[l-1][i][Spos].item()) == 1 and (int(self.Ahil[l][i][Ipos].item()) == 1 or int(self.Ahil[l][i][Rpos].item()) == 1))):
-                    true_Eidx[i] = l
+
+            max_Eidx[torch.logical_and(max_Eidx == self.num_layers, result_z[l, :] == Epos)] = l
+
+        Spos_lzero = self.Ahil[0, :, Spos]
+        for l in range(self.num_layers):
+            if l != 0:
+                true_Eidx[torch.logical_and(torch.logical_and(true_Eidx == self.num_layers, Spos_lzero == 1), self.Ahil[l, :, Spos] != 1)] = l
+                
+            #for i in range(self.num_nodes):
+            #    #if i not in max_Eidx and result_z[l][i] == Epos:
+            #    if max_Eidx[i].item() == self.num_layers and result_z[l][i].item() == Epos:
+            #        max_Eidx[i] = l
+            #    #print(self.Ahil[self.num_layers-1])
+            #    #exit(1)
+            #    #if l != 0 and i not in true_Eidx and (int(self.Ahil[l][i][Epos].item()) == 1 or (int(self.Ahil[l-1][i][Spos].item()) == 1 and (int(self.Ahil[l][i][Ipos].item()) == 1 or int(self.Ahil[l][i][Rpos].item()) == 1))):
+            #    if l != 0 and true_Eidx[i].item() == self.num_layers and (int(self.Ahil[l][i][Epos].item()) == 1 or (int(self.Ahil[l-1][i][Spos].item()) == 1 and (int(self.Ahil[l][i][Ipos].item()) == 1 or int(self.Ahil[l][i][Rpos].item()) == 1))):
+            #        true_Eidx[i] = l
+            
         #print(max_Eidx)
         #print(true_Eidx)
 
-        accurates = [i in max_Eidx and max_Eidx[i] == true_Eidx[i] for i in true_Eidx]
-        MAE = np.average([abs(max_Eidx[i] - true_Eidx[i]) for i in true_Eidx])
+        #accurates = [max_Eidx[i] != self.num_layers and max_Eidx[i] == true_Eidx[i] for i in true_Eidx]
+        
+        #MAE = np.average([abs(max_Eidx[i] - true_Eidx[i]) for i in true_Eidx])
+        #MAE = np.average([abs(max_Eidx[i].item() - true_Eidx[i].item()) for i in range(self.num_nodes) if true_Eidx[i].item() != self.num_layers])
+        MAE = torch.mean(torch.abs(max_Eidx[true_Eidx != self.num_layers] - true_Eidx[true_Eidx != self.num_layers]).float()).item()
         return MAE
         #MSE = np.average([(max_Eidx[i] - true_Eidx[i]) ** 2 for i in true_Eidx])
         #return MSE
@@ -481,8 +519,12 @@ class GenLayer:
                 print("error:", i_state, A_i[i])
                 exit(1)
             
-            for j in self.individuals:
-                if prev_G.has_edge(i, j):
+            #for j in self.individuals:
+            #    if prev_G.has_edge(i, j):
+            #        C_ij[i][j] = prev_G[i][j]["time"]
+
+            if i in prev_G:
+                for j in iter(prev_G[i]):
                     C_ij[i][j] = prev_G[i][j]["time"]
                     
         tmp_T_i = self.T_i
@@ -517,26 +559,19 @@ if __name__ == "__main__":
     R0 = 2.5
     
     seed = 3
-    stepsize = 50
-    #stepsize = 20
-
 
     learning_rate = 0.1
-    #learning_rate = 0.5
-
     param_ratio = 0.1
-    #param_ratio = 1.0
-    
-    #num_epochs = 2000
-    num_epochs = 1000
     eval_points = 20
 
-    #num_epochs = 20
-    #eval_points = 5
-    
     #filename = "tij_InVS13.dat"
     filename = sys.argv[1]
+    stepsize = int(sys.argv[2])
+    num_epochs = int(sys.argv[3])
+    
     print(filename)
+    print("stepsize:", stepsize)
+    print("num_epochs:", num_epochs)
  
     individuals = set()
     ret = ReadEdgeT(dirname, filename)
@@ -667,13 +702,15 @@ if __name__ == "__main__":
     a_orig[0] = net.a.item()
     beta_orig[0] = net.beta.item()
     gamma_orig[0] = net.gamma.item()
+
+    time_train_start = time.time()
     
     for epoch_idx in range(num_epochs):
         optimizer.zero_grad()
         sum_losses = net()
         sum_losses.backward()
         optimizer.step()
-        print("epoch_idx %d" % epoch_idx, "sum_losses: %.5e" % float(sum_losses), "%.5e %.5e %.5e" % (nn.Sigmoid()(net.a).item() * param_ratio, nn.Sigmoid()(net.beta).item() * param_ratio, nn.Sigmoid()(net.gamma).item() * param_ratio))
+        print("epoch_idx %5d" % epoch_idx, "sum_losses: %.5e" % float(sum_losses), "%.5e %.5e %.5e" % (nn.Sigmoid()(net.a).item() * param_ratio, nn.Sigmoid()(net.beta).item() * param_ratio, nn.Sigmoid()(net.gamma).item() * param_ratio))
         if (epoch_idx + 1) % (num_epochs // eval_points) == 0:
             summary_a[epoch_idx + 1] = nn.Sigmoid()(net.a).item() * param_ratio
             summary_beta[epoch_idx + 1] = nn.Sigmoid()(net.beta).item() * param_ratio
@@ -683,6 +720,8 @@ if __name__ == "__main__":
             beta_orig[epoch_idx + 1] = net.beta.item()
             gamma_orig[epoch_idx + 1] = net.gamma.item()
 
+    time_train_end = time.time()
+    
     print(nn.Sigmoid()(net.a) * param_ratio)
     print(nn.Sigmoid()(net.beta) * param_ratio)
     print(nn.Sigmoid()(net.gamma) * param_ratio)
@@ -701,6 +740,9 @@ if __name__ == "__main__":
     summary_data["true_R0"] = R0
     summary_data["filename"] = filename
 
+    print(summary_data)
+    #exit(1)
+    
     #device = torch.device("cpu")
     ################# stepsize = 1 ###################
     Cijl, Til, Ail, Ahil = gen_layers(result, rest_ets, individuals, tmin, tmax, 1, node_idx)
@@ -711,12 +753,21 @@ if __name__ == "__main__":
 
     summary_MAE = dict()
     for epoch_idx in sorted(list(summary_a.keys())):
+        time_viterbi_start = time.time()
+        
         print("hoge epoch:", epoch_idx)
         tmp_a, tmp_beta, tmp_gamma = a_orig[epoch_idx], beta_orig[epoch_idx], gamma_orig[epoch_idx]
         net.reset_params(tmp_a, tmp_beta, tmp_gamma)
         summary_MAE[epoch_idx] = net.calc_E_accuracy()
+
+        time_viterbi_end = time.time()
         
     print("########### SUMMARY #############")
+    
+    print("elapsed time:")
+    print("train:   %.5f" % (time_train_end - time_train_start,))
+    print("viterbi: %.5f" % (time_viterbi_end - time_viterbi_start,))
+    
     for sd_keys in sorted(list(summary_data.keys())):
         print(sd_keys, summary_data[sd_keys])
 
